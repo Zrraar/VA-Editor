@@ -1,0 +1,36 @@
+[package]
+name = "video_editor"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dioxus = { version = "0.5", features = ["desktop", "macros", "router"] }
+dioxus-desktop = "0.5"
+dioxus-free-icons = { version = "0.1", features = ["icons"] }
+serde = { version = "1.0", features = ["derive"] }
+uuid = { version = "1.6", features = ["v4", "serde"] }
+parking_lot = { version = "0.12", features = ["serde"] }
+tokio = { version = "1.35", features = ["full", "rt-multi-thread"] }
+anyhow = "1.0"
+thiserror = "1.0"
+image = { version = "0.24", features = ["jpeg", "png"] }
+rodio = { version = "0.17", features = ["mp3", "flac", "wav", "vorbis"] }
+hound = "3.5"
+atomic_refcell = "0.1"
+glam = "0.24"
+chrono = "0.4"
+rfd = "0.14"
+tempfile = "3.8"
+async-trait = "0.1"
+
+# Video processing
+ffmpeg-next = { version = "6.0", features = ["build"] }  # FFmpeg bindings
+# OR for cross-platform without system FFmpeg:
+# ffmpeg-next = { version = "6.0", features = ["static"] }
+
+# For mobile (optional):
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+
+[target.'cfg(target_os = "ios")'.dependencies]
+objc = "0.2"
