@@ -1,0 +1,198 @@
+name: Build Windows Video Editor
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: stable
+        targets: x86_64-pc-windows-msvc
+        
+    - name: Verify files exist
+      run: |
+        # Check what files are present
+        Get-ChildItem -Recurse -File | Select-Object Name, Directory | Format-Table
+        # Check for Cargo.toml specifically
+        if (Test-Path "Cargo.toml") {
+          echo "Cargo.toml found at root"
+          Get-Content Cargo.toml -First 5
+        } else {
+          # Try to find it
+          $cargoFile = Get-ChildItem -Recurse -Filter "Cargo.toml" | Select-Object -First 1
+          if ($cargoFile) {
+            echo "Cargo.toml found at: $($cargoFile.FullName)"
+            Set-Location $cargoFile.DirectoryName
+          } else {
+            echo "ERROR: No Cargo.toml found!"
+            exit 1
+          }
+        }
+        
+    - name: Cache dependencies
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        
+    - name: Install FFmpeg
+      run: |
+        # Download FFmpeg
+        $ProgressPreference = 'SilentlyContinue'
+        $ffmpegUrl = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl-shared.zip"
+        $output = "ffmpeg.zip"
+        
+        echo "Downloading FFmpeg..."
+        Invoke-WebRequest -Uri $ffmpegUrl -OutFile $output
+        
+        echo "Extracting FFmpeg..."
+        Expand-Archive -Path $output -DestinationPath "ffmpeg" -Force
+        
+        # Add FFmpeg to PATH
+        $ffmpegBin = Resolve-Path "ffmpeg/ffmpeg-master-latest-win64-gpl-shared/bin"
+        echo "$ffmpegBin" >> $env:GITHUB_PATH
+        
+        echo "FFmpeg version:"
+        & "$ffmpegBin/ffmpeg.exe" -version
+        
+    - name: Build Release
+      run: |
+        # Show current directory
+        echo "Current directory: $(Get-Location)"
+        echo "Files in current directory:"
+        Get-ChildItem
+        
+        # Check Cargo.toml exists
+        if (!(Test-Path "Cargo.toml")) {
+          echo "ERROR: Cargo.toml not found in $(Get-Location)"
+          exit 1
+        }
+        
+        # Build the project
+        echo "Building project..."
+        cargo build --release --target x86_64-pc-windows-msvc
+        
+        if ($LASTEXITCODE -ne 0) {
+          echo "Build failed with exit code: $LASTEXITCODE"
+          exit 1
+        }
+        
+        # Verify executable was created
+        $exePath = "target/x86_64-pc-windows-msvc/release/video_editor.exe"
+        if (Test-Path $exePath) {
+          echo "✅ Build successful! Executable created at: $exePath"
+          echo "File size: $((Get-Item $exePath).Length / 1MB) MB"
+        } else {
+          echo "❌ Executable not found at: $exePath"
+          echo "Contents of target directory:"
+          Get-ChildItem -Recurse "target" | Select-Object FullName
+          exit 1
+        }
+        
+    - name: Create Distribution Package
+      run: |
+        # Create dist directory
+        mkdir dist -Force
+        
+        # Copy executable
+        $exePath = "target/x86_64-pc-windows-msvc/release/video_editor.exe"
+        if (Test-Path $exePath) {
+          Copy-Item $exePath "dist/VideoEditor.exe"
+        }
+        
+        # Copy FFmpeg DLLs
+        if (Test-Path "ffmpeg/ffmpeg-master-latest-win64-gpl-shared/bin") {
+          Copy-Item "ffmpeg/ffmpeg-master-latest-win64-gpl-shared/bin/*.dll" "dist/" -ErrorAction SilentlyContinue
+        }
+        
+        # Create config file
+        @"
+{
+  "app": "Video Editor",
+  "version": "1.0.0",
+  "build_date": "$(Get-Date -Format 'yyyy-MM-dd')"
+}
+"@ | Out-File "dist/config.json" -Encoding UTF8
+        
+        # Create README
+        @"
+# Video Editor for Windows
+
+## How to Run
+1. Extract all files to a folder
+2. Double-click VideoEditor.exe
+3. If you get DLL errors, install Visual C++ Redistributable:
+   https://aka.ms/vs/17/release/vc_redist.x64.exe
+
+## Features
+- Video editing timeline
+- Multiple tracks
+- FFmpeg integration
+- Cross-platform support
+
+## System Requirements
+- Windows 10 or later
+- 4GB RAM minimum
+- 1GB free disk space
+"@ | Out-File "dist/README.txt" -Encoding UTF8
+        
+        # Create batch file for easy launch
+        @"
+@echo off
+echo Starting Video Editor...
+echo.
+VideoEditor.exe
+pause
+"@ | Out-File "dist/run.bat" -Encoding ASCII
+        
+        echo "Package created successfully!"
+        echo "Files in dist/:"
+        Get-ChildItem "dist"
+        
+    - name: Create ZIP Archive
+      run: |
+        if (Test-Path "dist") {
+          Compress-Archive -Path "dist/*" -DestinationPath "VideoEditor-Windows.zip" -Force
+          echo "✅ ZIP archive created: VideoEditor-Windows.zip"
+          echo "Archive size: $((Get-Item "VideoEditor-Windows.zip").Length / 1MB) MB"
+        } else {
+          echo "❌ dist folder not found!"
+          exit 1
+        }
+        
+    - name: Upload Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: VideoEditor-Windows
+        path: |
+          VideoEditor-Windows.zip
+          target/x86_64-pc-windows-msvc/release/video_editor.exe
+        retention-days: 7
+        if-no-files-found: warn
+        
+    - name: Upload Build Logs (for debugging)
+      if: always()  # Always run, even on failure
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-logs
+        path: |
+          target/**/*.log
+          Cargo.lock
+        retention-days: 1
+        if-no-files-found: ignore
+        
