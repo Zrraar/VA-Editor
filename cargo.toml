@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 dioxus = { version = "0.5", features = ["desktop", "macros", "router"] }
 dioxus-desktop = "0.5"
-dioxus-free-icons = { version = "0.1", features = ["icons"] }
+dioxus-free-icons = { version = "0.9", features = ["font-awesome-brands"] }
 serde = { version = "1.0", features = ["derive"] }
 uuid = { version = "1.6", features = ["v4", "serde"] }
 parking_lot = { version = "0.12", features = ["serde"] }
@@ -33,4 +33,5 @@ ffmpeg-next = { version = "6.0", features = ["build"] }  # FFmpeg bindings
 jni = "0.21"
 
 [target.'cfg(target_os = "ios")'.dependencies]
+
 objc = "0.2"
