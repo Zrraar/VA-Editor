@@ -1,0 +1,32 @@
+name: Build Windows App
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Install Rust
+      run: |
+        winget install --id Rustlang.Rustup
+        rustup default stable
+        rustup target add x86_64-pc-windows-msvc
+        
+    - name: Build
+      run: |
+        # Simple build command
+        cargo build --release
+        echo "Build completed!"
+        
+    - name: Upload executable
+      uses: actions/upload-artifact@v4
+      with:
+        name: VideoEditor
+        path: target/release/video_editor.exe
