@@ -7,32 +7,41 @@ on:
     branches: [main, master]
   workflow_dispatch: # Allow manual trigger
 
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
 jobs:
   build-windows:
     runs-on: windows-latest
+    
+    strategy:
+      matrix:
+        target: [x86_64-pc-windows-msvc]
     
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
       
-    - name: Setup Rust
-      uses: actions-rust-lang/setup-rust-toolchain@v1
+    - name: Setup Rust Toolchain
+      uses: dtolnay/rust-toolchain@stable
       with:
         toolchain: stable
         targets: x86_64-pc-windows-msvc
-        components: rust-src
         
     - name: Install FFmpeg (Windows)
       run: |
         # Download and install FFmpeg
-        Invoke-WebRequest -Uri "https://github.com/GyanD/codexffmpeg/releases/download/6.0/ffmpeg-6.0-full_build.zip" -OutFile "ffmpeg.zip"
-        Expand-Archive -Path "ffmpeg.zip" -DestinationPath "ffmpeg"
-        # Add FFmpeg to PATH for current job
-        echo "${{ github.workspace }}/ffmpeg" | Out-File -FilePath $env:GITHUB_PATH -Append
+        $ProgressPreference = 'SilentlyContinue'
+        Invoke-WebRequest -Uri "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip" -OutFile "ffmpeg.zip"
+        Expand-Archive -Path "ffmpeg.zip" -DestinationPath "ffmpeg" -Force
         
-    - name: Install Windows Build Tools
-      run: |
-        choco install visualstudio2022buildtools -y --package-parameters "--add Microsoft.VisualStudio.Component.VC.Tools.x86.x64 --add Microsoft.VisualStudio.Component.Windows10SDK"
+        # Add FFmpeg to PATH for current job
+        $ffmpegPath = "${{ github.workspace }}/ffmpeg/ffmpeg-master-latest-win64-gpl/bin"
+        echo "$ffmpegPath" | Out-File -FilePath $env:GITHUB_PATH -Append
+        
+        # Verify FFmpeg installation
+        & "$ffmpegPath/ffmpeg.exe" -version
         
     - name: Cache dependencies
       uses: actions/cache@v3
@@ -42,59 +51,76 @@ jobs:
           ~/.cargo/git
           target
         key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-        
+        restore-keys: |
+          ${{ runner.os }}-cargo-
+          
     - name: Build Release
       run: |
+        # Update Cargo.toml to use dynamic linking for Windows
+        (Get-Content Cargo.toml) -replace 'dioxus = .*', 'dioxus = { version = "0.5", features = ["desktop", "macros"] }' | Set-Content Cargo.toml
+        
         cargo build --release --target x86_64-pc-windows-msvc
-        # Copy required DLLs
-        Copy-Item "ffmpeg/ffmpeg-6.0-full_build/bin/*.dll" "target/x86_64-pc-windows-msvc/release/"
         
-    - name: Create Installer (Optional - using WiX)
-      if: success()
+        # Test if executable was created
+        if (Test-Path "target/x86_64-pc-windows-msvc/release/video_editor.exe") {
+          echo "Build successful!"
+        } else {
+          echo "Build failed - executable not found"
+          Get-ChildItem -Recurse "target" | Select-Object Name
+          exit 1
+        }
+        
+    - name: Collect DLLs and Assets
       run: |
-        choco install wixtoolset -y
-        # Create WiX XML for installer
+        # Create distribution folder
+        mkdir dist
+        mkdir dist\assets
+        
+        # Copy executable
+        Copy-Item "target/x86_64-pc-windows-msvc/release/video_editor.exe" "dist/"
+        
+        # Copy FFmpeg DLLs
+        Copy-Item "ffmpeg/ffmpeg-master-latest-win64-gpl/bin/*.dll" "dist/" -ErrorAction SilentlyContinue
+        
+        # Create basic assets structure
+        echo '{"app": "video_editor", "version": "1.0.0"}' | Out-File -FilePath "dist/config.json" -Encoding UTF8
+        
+        # Create README
         @"
-        <?xml version="1.0" encoding="UTF-8"?>
-        <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
-          <Product Id="*" Name="Video Editor" Language="1033" Version="1.0.0.0" Manufacturer="YourCompany" UpgradeCode="YOUR-GUID-HERE">
-            <Package InstallerVersion="200" Compressed="yes" InstallScope="perMachine" />
-            
-            <MajorUpgrade DowngradeErrorMessage="A newer version is already installed." />
-            <MediaTemplate />
-            
-            <Feature Id="ProductFeature" Title="Video Editor" Level="1">
-              <ComponentRef Id="ApplicationFiles" />
-            </Feature>
-            
-            <Directory Id="TARGETDIR" Name="SourceDir">
-              <Directory Id="ProgramFilesFolder">
-                <Directory Id="INSTALLFOLDER" Name="Video Editor" />
-              </Directory>
-            </Directory>
-            
-            <ComponentGroup Id="ProductComponents" Directory="INSTALLFOLDER">
-              <Component Id="MainExecutable" Guid="*">
-                <File Id="VideoEditor.exe" Source="target/x86_64-pc-windows-msvc/release/video_editor.exe" KeyPath="yes" />
-                <File Id="ffmpeg.dll" Source="ffmpeg/ffmpeg-6.0-full_build/bin/avcodec-60.dll" />
-                <File Id="ffmpeg2.dll" Source="ffmpeg/ffmpeg-6.0-full_build/bin/avformat-60.dll" />
-                <File Id="ffmpeg3.dll" Source="ffmpeg/ffmpeg-6.0-full_build/bin/avutil-58.dll" />
-                <File Id="ffmpeg4.dll" Source="ffmpeg/ffmpeg-6.0-full_build/bin/swscale-7.dll" />
-              </Component>
-            </ComponentGroup>
-          </Product>
-        </Wix>
-        "@ | Out-File -FilePath "installer.wxs"
+        Video Editor for Windows
+        ========================
         
-        # Build installer (optional)
-        # candle.exe installer.wxs
-        # light.exe installer.wixobj
+        To run:
+        1. Double-click video_editor.exe
+        2. Or run from command line: video_editor.exe
         
-    - name: Upload Artifacts
-      uses: actions/upload-artifact@v3
+        Requirements:
+        - Windows 10 or later
+        - Visual C++ Redistributable 2019+
+        
+        If you get DLL errors, install:
+        https://aka.ms/vs/17/release/vc_redist.x64.exe
+        "@ | Out-File -FilePath "dist/README.txt" -Encoding UTF8
+        
+    - name: Create ZIP Archive
+      run: |
+        # Create ZIP using PowerShell (built-in on Windows Server 2022)
+        Compress-Archive -Path "dist/*" -DestinationPath "VideoEditor-Windows.zip" -Force
+        
+    - name: Upload Artifacts (Using v4)
+      uses: actions/upload-artifact@v4
       with:
         name: VideoEditor-Windows
         path: |
+          VideoEditor-Windows.zip
           target/x86_64-pc-windows-msvc/release/video_editor.exe
-          target/x86_64-pc-windows-msvc/release/*.dll
         retention-days: 7
+        if-no-files-found: error
+        
+    - name: Upload Release Asset (on tag)
+      if: startsWith(github.ref, 'refs/tags/')
+      uses: actions/upload-artifact@v4
+      with:
+        name: VideoEditor-${{ github.ref_name }}
+        path: VideoEditor-Windows.zip
+        retention-days: 90
