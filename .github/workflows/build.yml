@@ -1,0 +1,128 @@
+name: Build Video Editor
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: stable
+        targets: x86_64-pc-windows-msvc
+        
+    - name: Cache dependencies
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        
+    - name: Fix Cargo.toml if needed
+      run: |
+        # Fix the feature issue in Cargo.toml
+        if (Test-Path Cargo.toml) {
+          # Read the content
+          $content = Get-Content Cargo.toml -Raw
+          
+          # Remove problematic feature section
+          $content = $content -replace '\[features\][\s\S]*?(?=\[|$)', ''
+          
+          # Add clean features section
+          $content = $content + "`n[features]`ndefault = []`n"
+          
+          Set-Content Cargo.toml $content -Encoding UTF8
+          
+          echo "Fixed Cargo.toml features section"
+          echo "=== Cargo.toml content ==="
+          Get-Content Cargo.toml
+        }
+        
+    - name: Build without FFmpeg
+      run: |
+        # Build without optional features
+        cargo build --release
+        
+        # Alternative: Build with specific target
+        # cargo build --release --target x86_64-pc-windows-msvc
+        
+    - name: Package for distribution
+      run: |
+        # Create output directory
+        mkdir dist -Force
+        
+        # Copy executable
+        $exePaths = @(
+          "target/release/video_editor.exe",
+          "target/x86_64-pc-windows-msvc/release/video_editor.exe"
+        )
+        
+        $found = $false
+        foreach ($exePath in $exePaths) {
+          if (Test-Path $exePath) {
+            Copy-Item $exePath "dist/"
+            echo "✅ Copied executable from: $exePath"
+            $found = $true
+            break
+          }
+        }
+        
+        if (-not $found) {
+          echo "❌ Executable not found in expected locations"
+          echo "Searching for executables..."
+          Get-ChildItem -Recurse "target" -Filter "*.exe"
+          exit 1
+        }
+        
+        # Create README
+        @"
+Video Editor v0.1.0
+===================
+
+How to run:
+1. Double-click video_editor.exe
+2. Or run from command line: video_editor.exe
+
+Requirements:
+- Windows 10 or later
+- Visual C++ Redistributable 2019+
+
+Note: This is a basic build without FFmpeg support.
+For full video editing features, install FFmpeg separately.
+"@ | Out-File "dist/README.txt" -Encoding UTF8
+        
+        # Create batch file
+        @"
+@echo off
+echo Starting Video Editor...
+echo.
+video_editor.exe
+pause
+"@ | Out-File "dist/run.bat" -Encoding ASCII
+        
+    - name: Create ZIP archive
+      run: |
+        Compress-Archive -Path "dist/*" -DestinationPath "VideoEditor-Windows.zip" -Force
+        echo "✅ Created archive: VideoEditor-Windows.zip"
+        echo "Size: $((Get-Item "VideoEditor-Windows.zip").Length / 1MB) MB"
+        
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: VideoEditor-Windows
+        path: |
+          VideoEditor-Windows.zip
+          dist/video_editor.exe
+        retention-days: 7
